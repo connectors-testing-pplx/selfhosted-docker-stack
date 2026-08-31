@@ -1,0 +1,35 @@
+# Traefik static configuration.
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+api:
+  dashboard: true
+  insecure: false
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: ${EMAIL}
+      storage: /acme.json
+      httpChallenge:
+        entryPoint: web
+  # For a LAN without public DNS, switch the resolver to self-signed via the
+  # tls.yml dynamic config (caServer = https://acme-staging-v02... or internal).

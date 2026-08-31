@@ -1,0 +1,175 @@
+services:
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./traefik/acme.json:/acme.json
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - proxy
+
+  heimdall:
+    image: lscr.io/linuxserver/heimdall:latest
+    container_name: heimdall
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-UTC}
+    volumes:
+      - heimdall-config:/config
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dash.rule=Host(`dash.${DOMAIN}`)"
+      - "traefik.http.routers.dash.entrypoints=websecure"
+      - "traefik.http.routers.dash.tls=true"
+      - "traefik.http.services.dash.loadbalancer.server.port=80"
+    networks:
+      - proxy
+
+  mariadb:
+    image: mariadb:11.5
+    container_name: mariadb
+    restart: unless-stopped
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
+      - MARIADB_DATABASE=nextcloud
+      - MARIADB_USER=${NEXTCLOUD_DB_USER}
+      - MARIADB_PASSWORD=${NEXTCLOUD_DB_PASSWORD}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+      - ./nextcloud/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - internal
+
+  nextcloud:
+    image: nextcloud:29
+    container_name: nextcloud
+    restart: unless-stopped
+    depends_on: [mariadb]
+    environment:
+      - MYSQL_HOST=mariadb
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=${NEXTCLOUD_DB_USER}
+      - MYSQL_PASSWORD=${NEXTCLOUD_DB_PASSWORD}
+    volumes:
+      - nextcloud-data:/var/www/html
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cloud.rule=Host(`cloud.${DOMAIN}`)"
+      - "traefik.http.routers.cloud.entrypoints=websecure"
+      - "traefik.http.routers.cloud.tls=true"
+      - "traefik.http.services.cloud.loadbalancer.server.port=80"
+    networks:
+      - proxy
+      - internal
+
+  vaultwarden:
+    image: vaultwarden/server:1.32
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      - DOMAIN=https://vault.${DOMAIN}
+      - ADMIN_TOKEN=${VAULTWARDEN_ADMIN_TOKEN}
+      - SIGNUPS_ALLOWED=false
+    volumes:
+      - vaultwarden-data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vault.rule=Host(`vault.${DOMAIN}`)"
+      - "traefik.http.routers.vault.entrypoints=websecure"
+      - "traefik.http.routers.vault.tls=true"
+      - "traefik.http.services.vault.loadbalancer.server.port=80"
+    networks:
+      - proxy
+
+  jellyfin:
+    image: jellyfin/jellyfin:10.9
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - ${MEDIA_DIR:-/srv/media}:/media:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.media.rule=Host(`media.${DOMAIN}`)"
+      - "traefik.http.routers.media.entrypoints=websecure"
+      - "traefik.http.routers.media.tls=true"
+      - "traefik.http.services.media.loadbalancer.server.port=8096"
+    networks:
+      - proxy
+
+  joplin:
+    image: joplin/server:2.14
+    container_name: joplin
+    restart: unless-stopped
+    environment:
+      - APP_BASE_URL=https://notes.${DOMAIN}
+      - APP_PORT=22300
+      - POSTGRES_HOST=joplin-db
+      - POSTGRES_USER=${JOPLIN_DB_USER}
+      - POSTGRES_PASSWORD=${JOPLIN_DB_PASSWORD}
+      - POSTGRES_DATABASE=joplin
+    depends_on: [joplin-db]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.notes.rule=Host(`notes.${DOMAIN}`)"
+      - "traefik.http.routers.notes.entrypoints=websecure"
+      - "traefik.http.routers.notes.tls=true"
+      - "traefik.http.services.notes.loadbalancer.server.port=22300"
+    networks:
+      - proxy
+      - internal
+
+  joplin-db:
+    image: postgres:16
+    container_name: joplin-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${JOPLIN_DB_USER}
+      - POSTGRES_PASSWORD=${JOPLIN_DB_PASSWORD}
+      - POSTGRES_DB=joplin
+    volumes:
+      - joplin-db-data:/var/lib/postgresql/data
+    networks:
+      - internal
+
+  watchtower:
+    image: containrrr/watchtower:1.7
+    container_name: watchtower
+    restart: unless-stopped
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * *
+      - WATCHTOWER_NOTIFICATIONS=slack
+      - WATCHTOWER_NOTIFICATION_SLACK_HOOK_URL=${WATCHTOWER_WEBHOOK:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - proxy
+
+volumes:
+  heimdall-config:
+  mariadb-data:
+  nextcloud-data:
+  vaultwarden-data:
+  jellyfin-config:
+  jellyfin-cache:
+  joplin-db-data:
+
+networks:
+  proxy:
+    driver: bridge
+  internal:
+    driver: bridge
